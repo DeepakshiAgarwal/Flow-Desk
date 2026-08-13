@@ -597,16 +597,22 @@
       </div>
     </div>
     <div style="padding:20px 22px;">
-      <div style="margin-bottom:10px;">
-        <label style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px;">Slack Bot Token</label>
-        <input id="slackTokenInput" type="password" placeholder="xoxb-..." style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e4e8ee;border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#f0f2f5;outline:none;">
-        <div style="font-size:11px;color:#9aa3b4;margin-top:4px;">Needs the <code>files:write</code> scope. Saved in your browser after first use.</div>
-      </div>
       <div style="margin-bottom:14px;">
-        <label style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px;">Slack Channel ID</label>
-        <input id="slackChannelInput" type="text" placeholder="C0123456789" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e4e8ee;border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#f0f2f5;outline:none;">
-        <div style="font-size:11px;color:#9aa3b4;margin-top:4px;">The bot must be invited into this channel first.</div>
+        <label style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px;">Slack Webhook URL</label>
+        <input id="slackWebhookInput" type="password" placeholder="https://hooks.slack.com/services/..." style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e4e8ee;border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#f0f2f5;outline:none;">
+        <div style="font-size:11px;color:#9aa3b4;margin-top:4px;">Saved automatically in your browser after first use.</div>
       </div>
+      <div style="display:flex;gap:10px;margin-bottom:14px;">
+        <div style="flex:1;">
+          <label style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px;">Cloudinary Cloud Name</label>
+          <input id="cloudinaryNameInput" type="text" placeholder="e.g. dabc123xy" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e4e8ee;border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#f0f2f5;outline:none;">
+        </div>
+        <div style="flex:1;">
+          <label style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;display:block;margin-bottom:5px;">Upload Preset</label>
+          <input id="cloudinaryPresetInput" type="text" placeholder="e.g. cx_snapshots" style="width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid #e4e8ee;border-radius:8px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#f0f2f5;outline:none;">
+        </div>
+      </div>
+      <div style="font-size:11px;color:#9aa3b4;margin-top:-8px;margin-bottom:14px;">Used to host the snapshot image so Slack can display it. Free account at <span style="color:#5a6478;">cloudinary.com</span> — create an <em>unsigned</em> upload preset.</div>
       <!-- Schedule section -->
       <div style="background:#f4f6f9;border-radius:10px;padding:12px 14px;margin-bottom:14px;">
         <div style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">Auto Schedule</div>
@@ -637,16 +643,19 @@
 
 <script>
 // ══ SLACK INTEGRATION ══
-const SLACK_TOKEN_KEY = 'cx_slack_bot_token';
-const SLACK_CHANNEL_KEY = 'cx_slack_channel';
+const SLACK_WEBHOOK_KEY = 'cx_slack_webhook';
+const CLOUDINARY_NAME_KEY = 'cx_cloudinary_name';
+const CLOUDINARY_PRESET_KEY = 'cx_cloudinary_preset';
 const SLACK_SCHEDULE_KEY = 'cx_slack_schedule';
 var slackScheduleInterval = null;
 
 function openSlackNotifyModal() {
-  var savedToken = localStorage.getItem(SLACK_TOKEN_KEY);
-  var savedChannel = localStorage.getItem(SLACK_CHANNEL_KEY);
-  if (savedToken) document.getElementById('slackTokenInput').value = savedToken;
-  if (savedChannel) document.getElementById('slackChannelInput').value = savedChannel;
+  var saved = localStorage.getItem(SLACK_WEBHOOK_KEY);
+  if (saved) document.getElementById('slackWebhookInput').value = saved;
+  var savedCloudName = localStorage.getItem(CLOUDINARY_NAME_KEY);
+  var savedPreset = localStorage.getItem(CLOUDINARY_PRESET_KEY);
+  if (savedCloudName) document.getElementById('cloudinaryNameInput').value = savedCloudName;
+  if (savedPreset) document.getElementById('cloudinaryPresetInput').value = savedPreset;
   // Restore schedule settings
   var sched = JSON.parse(localStorage.getItem(SLACK_SCHEDULE_KEY) || '{}');
   document.getElementById('slackAutoSchedule').checked = !!sched.enabled;
@@ -722,9 +731,10 @@ function startSlackScheduler() {
       var todayKey = now.toISOString().slice(0, 10);
       if (lastSent === todayKey) return;
       localStorage.setItem('cx_slack_last_sent', todayKey);
-      var token = localStorage.getItem(SLACK_TOKEN_KEY);
-      var channel = localStorage.getItem(SLACK_CHANNEL_KEY);
-      if (token && channel) runSlackSend(token, channel, true);
+      var webhook = localStorage.getItem(SLACK_WEBHOOK_KEY);
+      var cloudName = localStorage.getItem(CLOUDINARY_NAME_KEY);
+      var preset = localStorage.getItem(CLOUDINARY_PRESET_KEY);
+      if (webhook && cloudName && preset) runSlackSend(webhook, cloudName, preset, true);
     }
   }, 30000); // check every 30 seconds
 }
@@ -851,20 +861,22 @@ function buildSnapshotElement(entries) {
 }
 
 async function sendAllPendingToSlack() {
-  var token = document.getElementById('slackTokenInput').value.trim();
-  var channel = document.getElementById('slackChannelInput').value.trim();
-  if (!token) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Please enter your Slack Bot Token.</span>'; return; }
-  if (!token.startsWith('xoxb-')) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Invalid Bot Token (should start with xoxb-).</span>'; return; }
-  if (!channel) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Please enter a Slack Channel ID.</span>'; return; }
-  localStorage.setItem(SLACK_TOKEN_KEY, token);
-  localStorage.setItem(SLACK_CHANNEL_KEY, channel);
+  var webhook = document.getElementById('slackWebhookInput').value.trim();
+  var cloudName = document.getElementById('cloudinaryNameInput').value.trim();
+  var preset = document.getElementById('cloudinaryPresetInput').value.trim();
+  if (!webhook) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Please enter your Slack Webhook URL.</span>'; return; }
+  if (!webhook.startsWith('https://hooks.slack.com')) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Invalid webhook URL.</span>'; return; }
+  if (!cloudName || !preset) { document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Please enter your Cloudinary Cloud Name and Upload Preset.</span>'; return; }
+  localStorage.setItem(SLACK_WEBHOOK_KEY, webhook);
+  localStorage.setItem(CLOUDINARY_NAME_KEY, cloudName);
+  localStorage.setItem(CLOUDINARY_PRESET_KEY, preset);
   var btn = document.getElementById('slackSendBtn');
   btn.disabled=true; btn.textContent='Sending...';
-  await runSlackSend(token, channel, false);
+  await runSlackSend(webhook, cloudName, preset, false);
   btn.disabled=false; btn.textContent='Send Now to Slack';
 }
 
-async function runSlackSend(token, channel, isAuto) {
+async function runSlackSend(webhook, cloudName, preset, isAuto) {
   var tasks = (typeof state !== 'undefined' && state.tasks) ? state.tasks : [];
   var members = (typeof state !== 'undefined' && state.members) ? state.members : [];
   var map = {};
@@ -901,32 +913,37 @@ async function runSlackSend(token, channel, isAuto) {
     var blob = await new Promise(function(resolve){ canvas.toBlob(resolve, 'image/png'); });
     if (!blob) throw new Error('Could not generate snapshot image');
 
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Uploading to Slack…</span>';
+    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Uploading snapshot…</span>';
 
-    var filename = 'pending-tasks-' + new Date().toISOString().slice(0,10) + '.png';
-
-    var urlRes = await fetch('https://slack.com/api/files.getUploadURLExternal', {
+    var cloudForm = new FormData();
+    cloudForm.append('file', blob, 'pending-tasks-' + Date.now() + '.png');
+    cloudForm.append('upload_preset', preset);
+    var cloudRes = await fetch('https://api.cloudinary.com/v1_1/' + cloudName + '/image/upload', {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'filename=' + encodeURIComponent(filename) + '&length=' + blob.size
+      body: cloudForm
     }).then(function(r){ return r.json(); });
-    if (!urlRes.ok) throw new Error(urlRes.error || 'Could not get upload URL');
+    if (!cloudRes.secure_url) throw new Error(cloudRes.error && cloudRes.error.message ? cloudRes.error.message : 'Could not upload snapshot image');
+    var imageUrl = cloudRes.secure_url;
 
-    var fd = new FormData();
-    fd.append('file', blob, filename);
-    await fetch(urlRes.upload_url, { method: 'POST', body: fd });
+    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Posting to Slack…</span>';
 
     var totalPending = entries.reduce(function(s,e){ return s+e.tasks.length; }, 0);
-    var completeRes = await fetch('https://slack.com/api/files.completeUploadExternal', {
+    var now = new Date();
+    var dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
+    var dateStr = now.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
+
+    await fetch(webhook, {
       method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        files: [{ id: urlRes.file_id, title: 'Pending Tasks Snapshot' }],
-        channel_id: channel,
-        initial_comment: ':clipboard: *Pending Tasks Snapshot* — ' + totalPending + ' task' + (totalPending===1?'':'s') + ' across ' + entries.length + ' member' + (entries.length===1?'':'s') + '.'
+        text: ':clipboard: Pending Tasks Snapshot — ' + totalPending + ' task' + (totalPending===1?'':'s') + ' across ' + entries.length + ' member' + (entries.length===1?'':'s') + '.',
+        blocks: [
+          { type: 'section', text: { type: 'mrkdwn', text: ':clipboard: *Pending Tasks Snapshot*\n' + dayName + ' • ' + dateStr + '   |   *' + totalPending + ' pending* across ' + entries.length + ' member' + (entries.length===1?'':'s') } },
+          { type: 'image', image_url: imageUrl, alt_text: 'Pending tasks snapshot' }
+        ]
       })
-    }).then(function(r){ return r.json(); });
-    if (!completeRes.ok) throw new Error(completeRes.error || 'Could not post to channel');
+    });
 
     if (!isAuto) {
       document.getElementById('slackSendStatus').innerHTML='<span style="color:#059669;font-weight:600;">✓ Snapshot sent to Slack!</span>';
