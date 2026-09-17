@@ -899,6 +899,74 @@ async function sendAllPendingToSlack() {
   btn.disabled=false; btn.textContent='Send Now to Slack';
 }
 
+async function sendMemberSnapshotsToSlack(entries, webhook, cloudName, preset, isAuto, opts) {
+  if (entries.length === 0) {
+    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#d97706;">' + escapeHtml(opts.noneMessage) + '</span>';
+    return;
+  }
+
+  var now = new Date();
+  var dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
+  var dateStr = now.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
+  var sent = 0;
+
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i];
+    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Sending ' + (i+1) + ' of ' + entries.length + ' (' + escapeHtml(entry.name) + ')…</span>';
+
+    var el = buildSnapshotElement([entry], { icon: opts.icon, title: opts.title });
+    el.style.position = 'fixed';
+    el.style.left = '-9999px';
+    el.style.top = '0';
+    document.body.appendChild(el);
+
+    try {
+      if (typeof html2canvas !== 'function') throw new Error('Snapshot renderer failed to load');
+      var canvas = await html2canvas(el, { backgroundColor: '#f4f6f9', scale: 2, useCORS: true });
+      document.body.removeChild(el);
+
+      var blob = await new Promise(function(resolve){ canvas.toBlob(resolve, 'image/png'); });
+      if (!blob) throw new Error('Could not generate snapshot image');
+
+      var cloudForm = new FormData();
+      cloudForm.append('file', blob, opts.filePrefix + '-' + entry.name.replace(/\s+/g,'_') + '-' + Date.now() + '.png');
+      cloudForm.append('upload_preset', preset);
+      var cloudRes = await fetch('https://api.cloudinary.com/v1_1/' + cloudName + '/image/upload', {
+        method: 'POST',
+        body: cloudForm
+      }).then(function(r){ return r.json(); });
+      if (!cloudRes.secure_url) throw new Error(cloudRes.error && cloudRes.error.message ? cloudRes.error.message : 'Could not upload snapshot image');
+
+      await fetch(webhook, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: opts.icon + ' ' + opts.title + ' — ' + entry.name + ' (' + entry.tasks.length + ' task' + (entry.tasks.length===1?'':'s') + ')',
+          blocks: [
+            { type: 'section', text: { type: 'mrkdwn', text: opts.icon + ' *' + opts.title + ' — ' + escapeHtml(entry.name) + '*\n' + dayName + ' • ' + dateStr + '   |   *' + entry.tasks.length + ' task' + (entry.tasks.length===1?'':'s') + '*' } },
+            { type: 'image', image_url: cloudRes.secure_url, alt_text: opts.title + ' for ' + entry.name }
+          ]
+        })
+      });
+      sent++;
+    } catch(e) {
+      if (el.parentNode) document.body.removeChild(el);
+      if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Failed on ' + escapeHtml(entry.name) + ': ' + escapeHtml(e.message||'Unknown error') + '</span>';
+      return;
+    }
+
+    await new Promise(function(r){ setTimeout(r, 500); });
+  }
+
+  if (!isAuto) {
+    document.getElementById('slackSendStatus').innerHTML='<span style="color:#059669;font-weight:600;">✓ Sent ' + sent + ' member snapshot' + (sent===1?'':'s') + ' to Slack!</span>';
+    if (typeof showNotif === 'function') showNotif('Slack sent!', sent + ' member snapshot' + (sent===1?'':'s') + ' delivered.', 'success');
+  } else {
+    if (typeof showNotif === 'function') showNotif('Auto Slack sent!', 'Scheduled snapshots delivered.', 'success');
+  }
+}
+
 async function runSlackSend(webhook, cloudName, preset, isAuto) {
   var tasks = (typeof state !== 'undefined' && state.tasks) ? state.tasks : [];
   var members = (typeof state !== 'undefined' && state.members) ? state.members : [];
@@ -914,70 +982,10 @@ async function runSlackSend(webhook, cloudName, preset, isAuto) {
     map[m.id].tasks.push(t);
   });
   var entries = Object.values(map).filter(function(m){return m.tasks.length>0;});
-  if (entries.length===0) {
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#d97706;">No open tasks to send!</span>';
-    return;
-  }
   entries.sort(function(a,b){ return b.tasks.length - a.tasks.length; });
-
-  if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Generating snapshot…</span>';
-
-  var el = buildSnapshotElement(entries);
-  el.style.position = 'fixed';
-  el.style.left = '-9999px';
-  el.style.top = '0';
-  document.body.appendChild(el);
-
-  try {
-    if (typeof html2canvas !== 'function') throw new Error('Snapshot renderer failed to load');
-    var canvas = await html2canvas(el, { backgroundColor: '#f4f6f9', scale: 2, useCORS: true });
-    document.body.removeChild(el);
-
-    var blob = await new Promise(function(resolve){ canvas.toBlob(resolve, 'image/png'); });
-    if (!blob) throw new Error('Could not generate snapshot image');
-
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Uploading snapshot…</span>';
-
-    var cloudForm = new FormData();
-    cloudForm.append('file', blob, 'pending-tasks-' + Date.now() + '.png');
-    cloudForm.append('upload_preset', preset);
-    var cloudRes = await fetch('https://api.cloudinary.com/v1_1/' + cloudName + '/image/upload', {
-      method: 'POST',
-      body: cloudForm
-    }).then(function(r){ return r.json(); });
-    if (!cloudRes.secure_url) throw new Error(cloudRes.error && cloudRes.error.message ? cloudRes.error.message : 'Could not upload snapshot image');
-    var imageUrl = cloudRes.secure_url;
-
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Posting to Slack…</span>';
-
-    var totalTasks = entries.reduce(function(s,e){ return s+e.tasks.length; }, 0);
-    var now = new Date();
-    var dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
-    var dateStr = now.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
-
-    await fetch(webhook, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: ':clipboard: Task Snapshot — ' + totalTasks + ' task' + (totalTasks===1?'':'s') + ' across ' + entries.length + ' member' + (entries.length===1?'':'s') + '.',
-        blocks: [
-          { type: 'section', text: { type: 'mrkdwn', text: ':clipboard: *Task Snapshot (Pending & In Process)*\n' + dayName + ' • ' + dateStr + '   |   *' + totalTasks + ' open task' + (totalTasks===1?'':'s') + '* across ' + entries.length + ' member' + (entries.length===1?'':'s') } },
-          { type: 'image', image_url: imageUrl, alt_text: 'Task snapshot' }
-        ]
-      })
-    });
-
-    if (!isAuto) {
-      document.getElementById('slackSendStatus').innerHTML='<span style="color:#059669;font-weight:600;">✓ Snapshot sent to Slack!</span>';
-      if (typeof showNotif === 'function') showNotif('Slack sent!', 'Pending tasks snapshot delivered.', 'success');
-    } else {
-      if (typeof showNotif === 'function') showNotif('Auto Slack sent!', 'Scheduled snapshot delivered.', 'success');
-    }
-  } catch(e) {
-    if (el.parentNode) document.body.removeChild(el);
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Failed: ' + escapeHtml(e.message||'Unknown error') + '</span>';
-  }
+  await sendMemberSnapshotsToSlack(entries, webhook, cloudName, preset, isAuto, {
+    icon: '📋', title: 'Task Snapshot', filePrefix: 'pending-tasks', noneMessage: 'No open tasks to send!'
+  });
 }
 
 function buildActivityEntries(days) {
@@ -1018,69 +1026,9 @@ async function sendActivityToSlack() {
 
 async function runActivitySend(webhook, cloudName, preset, isAuto) {
   var entries = buildActivityEntries(10);
-  if (entries.length === 0) {
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#d97706;">No tasks updated in the last 10 days.</span>';
-    return;
-  }
-
-  if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Generating activity snapshot…</span>';
-
-  var el = buildSnapshotElement(entries, { icon: '📊', title: 'Team Activity — Last 10 Days' });
-  el.style.position = 'fixed';
-  el.style.left = '-9999px';
-  el.style.top = '0';
-  document.body.appendChild(el);
-
-  try {
-    if (typeof html2canvas !== 'function') throw new Error('Snapshot renderer failed to load');
-    var canvas = await html2canvas(el, { backgroundColor: '#f4f6f9', scale: 2, useCORS: true });
-    document.body.removeChild(el);
-
-    var blob = await new Promise(function(resolve){ canvas.toBlob(resolve, 'image/png'); });
-    if (!blob) throw new Error('Could not generate snapshot image');
-
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Uploading snapshot…</span>';
-
-    var cloudForm = new FormData();
-    cloudForm.append('file', blob, 'activity-snapshot-' + Date.now() + '.png');
-    cloudForm.append('upload_preset', preset);
-    var cloudRes = await fetch('https://api.cloudinary.com/v1_1/' + cloudName + '/image/upload', {
-      method: 'POST',
-      body: cloudForm
-    }).then(function(r){ return r.json(); });
-    if (!cloudRes.secure_url) throw new Error(cloudRes.error && cloudRes.error.message ? cloudRes.error.message : 'Could not upload snapshot image');
-    var imageUrl = cloudRes.secure_url;
-
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#5a6478;">Posting to Slack…</span>';
-
-    var totalTasks = entries.reduce(function(s,e){ return s+e.tasks.length; }, 0);
-    var now = new Date();
-    var dayName = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][now.getDay()];
-    var dateStr = now.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'});
-
-    await fetch(webhook, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: ':bar_chart: Team Activity (Last 10 Days) — ' + totalTasks + ' task' + (totalTasks===1?'':'s') + ' across ' + entries.length + ' member' + (entries.length===1?'':'s') + '.',
-        blocks: [
-          { type: 'section', text: { type: 'mrkdwn', text: ':bar_chart: *Team Activity — Last 10 Days*\n' + dayName + ' • ' + dateStr + '   |   *' + totalTasks + ' task' + (totalTasks===1?'':'s') + '* updated across ' + entries.length + ' member' + (entries.length===1?'':'s') } },
-          { type: 'image', image_url: imageUrl, alt_text: 'Team activity snapshot' }
-        ]
-      })
-    });
-
-    if (!isAuto) {
-      document.getElementById('slackSendStatus').innerHTML='<span style="color:#059669;font-weight:600;">✓ Activity snapshot sent to Slack!</span>';
-      if (typeof showNotif === 'function') showNotif('Slack sent!', '10-day activity snapshot delivered.', 'success');
-    } else {
-      if (typeof showNotif === 'function') showNotif('Auto Slack sent!', 'Scheduled activity snapshot delivered.', 'success');
-    }
-  } catch(e) {
-    if (el.parentNode) document.body.removeChild(el);
-    if (!isAuto) document.getElementById('slackSendStatus').innerHTML='<span style="color:#dc2626;">Failed: ' + escapeHtml(e.message||'Unknown error') + '</span>';
-  }
+  await sendMemberSnapshotsToSlack(entries, webhook, cloudName, preset, isAuto, {
+    icon: '📊', title: 'Team Activity — Last 10 Days', filePrefix: 'activity-snapshot', noneMessage: 'No tasks updated in the last 10 days.'
+  });
 }
 
 document.getElementById('slackFloatBtn').addEventListener('mouseenter', function(){ this.style.transform='translateY(-2px)'; this.style.boxShadow='0 8px 24px rgba(74,21,75,0.55)'; });
