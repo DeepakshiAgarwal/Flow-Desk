@@ -613,23 +613,6 @@
         </div>
       </div>
       <div style="font-size:11px;color:#9aa3b4;margin-top:-8px;margin-bottom:14px;">Used to host the snapshot image so Slack can display it. Free account at <span style="color:#5a6478;">cloudinary.com</span> — create an <em>unsigned</em> upload preset.</div>
-      <!-- Schedule section -->
-      <div style="background:#f4f6f9;border-radius:10px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:11px;font-weight:700;color:#5a6478;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">Auto Schedule</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-          <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:13px;color:#1a1f2e;font-weight:500;text-transform:none;letter-spacing:0;">
-            <input type="checkbox" id="slackAutoSchedule" onchange="toggleSlackSchedule()" style="width:15px;height:15px;accent-color:#4A154B;cursor:pointer;">
-            Auto-send every <strong>Monday &amp; Thursday</strong>
-          </label>
-        </div>
-        <div id="slackScheduleTimeRow" style="display:flex;align-items:center;gap:8px;padding-left:22px;">
-          <span style="font-size:12px;color:#5a6478;">at</span>
-          <input type="time" id="slackScheduleTime" value="09:00" onchange="saveSlackSchedule()" style="padding:5px 8px;border:1px solid #e4e8ee;border-radius:6px;font-size:13px;font-family:'DM Sans',sans-serif;color:#1a1f2e;background:#fff;outline:none;">
-          <span style="font-size:12px;color:#9aa3b4;">(browser must be open)</span>
-        </div>
-        <div id="slackScheduleStatus" style="font-size:12px;color:#059669;margin-top:8px;padding-left:22px;min-height:16px;"></div>
-      </div>
-
       <!-- Member preview -->
       <div id="slackMemberPreview" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;max-height:220px;overflow-y:auto;"></div>
       <div id="slackSendStatus" style="min-height:20px;font-size:13px;margin-bottom:10px;"></div>
@@ -649,7 +632,6 @@ const SLACK_WEBHOOK_KEY = 'cx_slack_webhook';
 const CLOUDINARY_NAME_KEY = 'cx_cloudinary_name';
 const CLOUDINARY_PRESET_KEY = 'cx_cloudinary_preset';
 const SLACK_SCHEDULE_KEY = 'cx_slack_schedule';
-var slackScheduleInterval = null;
 
 function openSlackNotifyModal() {
   var saved = localStorage.getItem(SLACK_WEBHOOK_KEY);
@@ -658,103 +640,15 @@ function openSlackNotifyModal() {
   var savedPreset = localStorage.getItem(CLOUDINARY_PRESET_KEY);
   if (savedCloudName) document.getElementById('cloudinaryNameInput').value = savedCloudName;
   if (savedPreset) document.getElementById('cloudinaryPresetInput').value = savedPreset;
-  // Restore schedule settings
-  var sched = JSON.parse(localStorage.getItem(SLACK_SCHEDULE_KEY) || '{}');
-  document.getElementById('slackAutoSchedule').checked = !!sched.enabled;
-  if (sched.time) document.getElementById('slackScheduleTime').value = sched.time;
-  updateSlackScheduleStatus();
   renderSlackMemberPreview();
   document.getElementById('slackNotifyOverlay').style.display = 'flex';
   document.getElementById('slackSendStatus').innerHTML = '';
 }
 function closeSlackNotifyModal() { document.getElementById('slackNotifyOverlay').style.display = 'none'; }
 
-function toggleSlackSchedule() {
-  saveSlackSchedule();
-  updateSlackScheduleStatus();
-}
+// Auto-send was removed: clear any schedule saved in this browser from before.
+try { localStorage.removeItem(SLACK_SCHEDULE_KEY); localStorage.removeItem('cx_slack_last_sent'); } catch(e) {}
 
-function saveSlackSchedule() {
-  var enabled = document.getElementById('slackAutoSchedule').checked;
-  var time = document.getElementById('slackScheduleTime').value;
-  localStorage.setItem(SLACK_SCHEDULE_KEY, JSON.stringify({ enabled: enabled, time: time }));
-  if (enabled) startSlackScheduler(); else stopSlackScheduler();
-  updateSlackScheduleStatus();
-}
-
-function updateSlackScheduleStatus() {
-  var el = document.getElementById('slackScheduleStatus');
-  var enabled = document.getElementById('slackAutoSchedule').checked;
-  var time = document.getElementById('slackScheduleTime').value;
-  if (enabled) {
-    var nextDay = getNextTriggerDay(time);
-    el.innerHTML = '✓ Active — next send: <strong>' + nextDay + ' at ' + time + '</strong>';
-    el.style.color = '#059669';
-  } else {
-    el.innerHTML = 'Schedule off — use "Send Now" for manual trigger.';
-    el.style.color = '#9aa3b4';
-  }
-}
-
-function getNextTriggerDay(time) {
-  var now = new Date();
-  var day = now.getDay(); // 0=Sun,1=Mon,...,4=Thu
-  var [h, m] = time.split(':').map(Number);
-  // Check if today (Mon=1 or Thu=4) and time hasn't passed
-  var targets = [1, 4]; // Monday, Thursday
-  for (var offset = 0; offset <= 7; offset++) {
-    var checkDay = (day + offset) % 7;
-    if (targets.includes(checkDay)) {
-      if (offset === 0) {
-        // today — check if time hasn't passed
-        if (now.getHours() < h || (now.getHours() === h && now.getMinutes() < m)) {
-          return 'Today (Mon/Thu)';
-        }
-      } else {
-        return offset === 1 ? 'Tomorrow' : ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][checkDay];
-      }
-    }
-  }
-  return 'Next Mon/Thu';
-}
-
-function startSlackScheduler() {
-  stopSlackScheduler();
-  slackScheduleInterval = setInterval(function() {
-    var sched = JSON.parse(localStorage.getItem(SLACK_SCHEDULE_KEY) || '{}');
-    if (!sched.enabled) return;
-    var now = new Date();
-    var dayOfWeek = now.getDay(); // 1=Mon, 4=Thu
-    if (dayOfWeek !== 1 && dayOfWeek !== 4) return;
-    var [h, m] = (sched.time || '09:00').split(':').map(Number);
-    if (now.getHours() === h && now.getMinutes() === m) {
-      // Check we haven't already sent today
-      var lastSent = localStorage.getItem('cx_slack_last_sent');
-      var todayKey = now.toISOString().slice(0, 10);
-      if (lastSent === todayKey) return;
-      localStorage.setItem('cx_slack_last_sent', todayKey);
-      var webhook = localStorage.getItem(SLACK_WEBHOOK_KEY);
-      var cloudName = localStorage.getItem(CLOUDINARY_NAME_KEY);
-      var preset = localStorage.getItem(CLOUDINARY_PRESET_KEY);
-      if (webhook && cloudName && preset) runSlackSend(webhook, cloudName, preset, true);
-    }
-  }, 30000); // check every 30 seconds
-}
-
-function stopSlackScheduler() {
-  if (slackScheduleInterval) { clearInterval(slackScheduleInterval); slackScheduleInterval = null; }
-}
-
-// Auto-start scheduler if it was previously enabled
-(function() {
-  setTimeout(function() {
-    var sched = JSON.parse(localStorage.getItem(SLACK_SCHEDULE_KEY) || '{}');
-    if (sched.enabled) {
-      startSlackScheduler();
-      showNotif('Slack scheduler active', 'Auto-sends every Mon & Thu at ' + (sched.time || '09:00'), 'success');
-    }
-  }, 3000);
-})();
 function renderSlackMemberPreview() {
   var preview = document.getElementById('slackMemberPreview');
   var tasks = (typeof state !== 'undefined' && state.tasks) ? state.tasks : [];
